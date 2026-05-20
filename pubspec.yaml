@@ -1,0 +1,47 @@
+##.title
+## ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+##
+## Copyright © dev-cetera.com & contributors.
+##
+## The use of this source code is governed by an MIT-style license described in
+## the LICENSE file located in this project's root directory.
+##
+## See: https://opensource.org/license/mit
+##
+## ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+##.title~
+
+name: reliable
+homepage: https://dev-cetera.com/
+funding:
+  - https://www.buymeacoffee.com/dev_cetera
+  - https://www.patreon.com/c/robelator
+  - https://github.com/sponsors/robelator
+description: "An offline-first, secure data repository with automatic sync, retry, and encryption for Dart & Flutter."
+version: 0.0.1
+
+environment:
+  # Fixed versions for better stability.
+  sdk: 3.11.5
+  flutter: 3.41.9
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Fixed versions for better stability.
+  uuid: 4.5.3
+  synchronized: 3.4.0+1
+  sembast: 3.8.7
+  sembast_web: 2.4.4+1
+  sqflite: 2.4.2+1
+  shared_preferences: 2.5.5
+  path_provider: 2.1.5
+  path: 1.9.1
+  encrypt: 5.0.3
+  df_log: 0.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
