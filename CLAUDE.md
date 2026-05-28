@@ -1,9 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-The umbrella workspace context (cross-package wiring, `@scripts/`, the standard `+message`/`++message` release flow, license-banner preservation, etc.) is in `../../CLAUDE.md`. Read that first; this file only documents what is specific to `reliable`.
-
 ## What this package is
 
 An **offline-first, secure data repository** for Dart/Flutter. The user supplies a `NetworkAdapter` (HTTP client) and a `StorageAdapter` (durable cache + sync queue); `ReliableRepository` wires them into an optimistic-write, cache-first read flow with retry + AES-at-rest.
