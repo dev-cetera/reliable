@@ -105,11 +105,15 @@ class SqliteAdapter implements StorageAdapter<Database> {
     final jsonStr = jsonEncode(data);
     final storedData = _processInput(jsonStr);
 
-    await db.insert(ReliableSchema.tableCache, {
-      ReliableSchema.colCollection: collection,
-      ReliableSchema.colDocId: id,
-      ReliableSchema.colData: storedData,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert(
+      ReliableSchema.tableCache,
+      {
+        ReliableSchema.colCollection: collection,
+        ReliableSchema.colDocId: id,
+        ReliableSchema.colData: storedData,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   @override

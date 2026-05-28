@@ -5,7 +5,7 @@ Future<Database> openSembastDatabase({
   required int version,
   SembastCodec? codec,
   required Future<void> Function(Database db, int oldVersion, int newVersion)
-  onVersionChanged,
+      onVersionChanged,
 }) {
   throw UnsupportedError(
     'openSembastDatabase() is not supported on this platform.',

@@ -53,8 +53,7 @@ void main() {
       expect(
         caught.toString(),
         contains("type 'String' is not a subtype of type 'int'"),
-        reason:
-            'If this assertion fails, sembast no longer treats stores with '
+        reason: 'If this assertion fails, sembast no longer treats stores with '
             'the same name + different K type as the same store. The '
             'namespacing fix in sembast_adapter.dart can be reverted.',
       );

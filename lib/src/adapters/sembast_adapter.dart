@@ -6,8 +6,7 @@ import 'sembast_adapter_stub.dart'
     if (dart.library.io) 'sembast_adapter_native.dart'
     if (dart.library.js_interop) 'sembast_adapter_web.dart'
     if (dart.library.js) 'sembast_adapter_web.dart'
-    if (dart.library.html) 'sembast_adapter_web.dart'
-    as platform;
+    if (dart.library.html) 'sembast_adapter_web.dart' as platform;
 
 class SembastAdapter implements StorageAdapter<Database> {
   Database? _db;

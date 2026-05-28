@@ -15,7 +15,7 @@ class ReliableAesEncryption implements ReliableEncryption {
   final Encrypter _encrypter;
 
   ReliableAesEncryption(String keyString)
-    : _encrypter = Encrypter(AES(Key.fromUtf8(_validateKey(keyString))));
+      : _encrypter = Encrypter(AES(Key.fromUtf8(_validateKey(keyString))));
 
   static String _validateKey(String key) {
     if (key.length != 32) {
@@ -34,7 +34,8 @@ class ReliableAesEncryption implements ReliableEncryption {
   String encrypt(String input) {
     final iv = IV(
       Uint8List.fromList(
-        List<int>.generate(_kIvLengthBytes, (_) => Random.secure().nextInt(256)),
+        List<int>.generate(
+            _kIvLengthBytes, (_) => Random.secure().nextInt(256)),
       ),
     );
     final encrypted = _encrypter.encrypt(input, iv: iv);

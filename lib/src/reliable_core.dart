@@ -36,25 +36,62 @@ final class ReliableSchema {
   static const String colNextTryAt = 'next_try_at';
   static const String colUserId = 'user_id';
   static const String colExpiresAt = 'expires_at';
+
+  /// Reserved field name written into every cached document to record its
+  /// schema version. Used by [DataMigration] to detect docs that need to be
+  /// brought forward. Stripped from the in-memory cache so callers never
+  /// see it. Never store data under this key in your own documents — it
+  /// will be overwritten.
+  static const String colSchemaVersion = '_reliable_schema_v';
+}
+
+/// A single forward-only transformation that brings a cached document
+/// from schema version `toVersion - 1` to [toVersion].
+///
+/// Cache migrations exist so locally-persisted documents survive backend
+/// schema changes when an installed app is upgraded. They run on the next
+/// read of each collection: every cached doc whose recorded version is
+/// below the highest registered [toVersion] is passed through every
+/// pending migration in ascending order, then re-persisted at the latest
+/// version. Fresh responses from the network are assumed to already be
+/// at the latest schema and are tagged on write.
+///
+/// Migrations must be:
+/// - **Pure**: depend only on [doc] — no global state, no network.
+/// - **Total**: handle missing or null fields rather than throwing. A
+///   doc whose migration throws is dropped on the next read (and the
+///   `REPO_MIGRATION_FAILED` audit event fires so the host can decide
+///   whether to refetch from the network).
+/// - **Forward-only**: there is no down-migration. Bump versions
+///   monotonically across app releases.
+final class DataMigration {
+  /// The schema version this migration produces. Must be `>= 1` and
+  /// unique within the per-collection migration list.
+  final int toVersion;
+
+  /// Transforms a doc from version `(toVersion - 1)` to [toVersion].
+  final Map<String, dynamic> Function(Map<String, dynamic> doc) migrate;
+
+  const DataMigration({required this.toVersion, required this.migrate});
 }
 
 /// Cache strategy for read operations.
 enum CacheStrategy {
   /// (Default) Try RAM -> Disk -> Network. Fast, offline-friendly.
-  cacheOrElseNetwork,
+  CACHE_OR_ELSE_NETWORK,
 
   /// Try Network first, fall back to Disk on failure. Prioritizes freshness.
-  networkOrElseCache,
+  NETWORK_OR_ELSE_CACHE,
 
   /// Disk/RAM only. Never hits the network.
-  cacheOnly,
+  CACHE_ONLY,
 
   /// Network only. Never reads from cache (still writes to it).
-  networkOnly,
+  NETWORK_ONLY,
 }
 
 /// HTTP Request Methods.
-enum RequestMethod { get, post, put, patch, delete }
+enum RequestMethod { GET, POST, PUT, PATCH, DELETE }
 
 /// Exception class for network-related errors specific to Reliable.
 class ReliableNetworkException implements Exception {
@@ -156,8 +193,17 @@ final class OfflineAction {
       collection: requireString(ReliableSchema.colCollection),
       endpoint: requireString(ReliableSchema.colEndpoint),
       method: () {
-        final raw = map[ReliableSchema.colMethod];
-        final match = RequestMethod.values.where((e) => e.name == raw);
+        final raw = map[ReliableSchema.colMethod]?.toString();
+        if (raw == null) {
+          throw QueueCorruptionException(
+            'missing "${ReliableSchema.colMethod}"',
+          );
+        }
+        // Case-insensitive match: persisted entries from versions prior to
+        // the UPPER_SNAKE_CASE rename still carry lowercase names. New
+        // writes use the uppercase form via [RequestMethod.name].
+        final needle = raw.toUpperCase();
+        final match = RequestMethod.values.where((e) => e.name == needle);
         if (match.isEmpty) {
           throw FormatException(
             'Unknown RequestMethod "$raw" in persisted OfflineAction',
@@ -208,26 +254,25 @@ final class OfflineAction {
 
   @override
   int get hashCode => Object.hash(
-    uuid,
-    collection,
-    endpoint,
-    method,
-    docId,
-    timestamp,
-    retryCount,
-    nextTryAt,
-    userId,
-    expiresAt,
-  );
+        uuid,
+        collection,
+        endpoint,
+        method,
+        docId,
+        timestamp,
+        retryCount,
+        nextTryAt,
+        userId,
+        expiresAt,
+      );
 
   @override
-  String toString() =>
-      'OfflineAction(uuid: $uuid, collection: $collection, '
+  String toString() => 'OfflineAction(uuid: $uuid, collection: $collection, '
       'method: ${method.name}, docId: $docId, retryCount: $retryCount)';
 }
 
-typedef MigrationCallback<T> =
-    Future<void> Function(T db, int oldVersion, int newVersion);
+typedef MigrationCallback<T> = Future<void> Function(
+    T db, int oldVersion, int newVersion);
 
 /// An adapter interface for storage backends.
 abstract interface class StorageAdapter<T> {

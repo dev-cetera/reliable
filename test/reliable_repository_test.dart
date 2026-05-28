@@ -27,7 +27,7 @@ void main() {
         final out = await repo.fetch(
           'items',
           '/items',
-          strategy: CacheStrategy.networkOrElseCache,
+          strategy: CacheStrategy.NETWORK_OR_ELSE_CACHE,
         );
 
         expect(out.map((e) => e['id']).toList(), ['a', 'b']);
@@ -49,7 +49,7 @@ void main() {
       final out = await repo.fetch(
         'items',
         '/items',
-        strategy: CacheStrategy.networkOrElseCache,
+        strategy: CacheStrategy.NETWORK_OR_ELSE_CACHE,
       );
 
       expect(out, hasLength(1));
@@ -64,7 +64,7 @@ void main() {
         final out = await repo.fetch(
           'items',
           '/items',
-          strategy: CacheStrategy.networkOrElseCache,
+          strategy: CacheStrategy.NETWORK_OR_ELSE_CACHE,
         );
 
         expect(out, isEmpty);
@@ -80,7 +80,7 @@ void main() {
           () => repo.fetch(
             'items',
             '/items',
-            strategy: CacheStrategy.cacheOrElseNetwork,
+            strategy: CacheStrategy.CACHE_OR_ELSE_NETWORK,
           ),
           throwsA(isA<ReliableNetworkException>()),
         );
@@ -98,7 +98,7 @@ void main() {
       final out = await repo.fetch(
         'items',
         '/items',
-        strategy: CacheStrategy.cacheOnly,
+        strategy: CacheStrategy.CACHE_ONLY,
       );
 
       expect(out.single['id'], 'a');
@@ -118,7 +118,7 @@ void main() {
       final out = await repo.fetch(
         'items',
         '/items',
-        strategy: CacheStrategy.networkOnly,
+        strategy: CacheStrategy.NETWORK_ONLY,
       );
 
       expect(out.single['id'], 'fresh');

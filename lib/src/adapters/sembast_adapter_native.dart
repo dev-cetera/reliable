@@ -7,7 +7,7 @@ Future<Database> openSembastDatabase({
   required int version,
   SembastCodec? codec,
   required Future<void> Function(Database db, int oldVersion, int newVersion)
-  onVersionChanged,
+      onVersionChanged,
 }) async {
   final dir = await getApplicationDocumentsDirectory();
   await dir.create(recursive: true);
@@ -17,7 +17,8 @@ Future<Database> openSembastDatabase({
     version: version,
     codec: codec,
     onVersionChanged: (db, oldVersion, newVersion) async {
-      if (oldVersion < newVersion) await onVersionChanged(db, oldVersion, newVersion);
+      if (oldVersion < newVersion)
+        await onVersionChanged(db, oldVersion, newVersion);
     },
   );
 }

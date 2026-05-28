@@ -20,7 +20,7 @@ void main() {
       await repo.write(
         collection: 'items',
         endpoint: '/items',
-        method: RequestMethod.post,
+        method: RequestMethod.POST,
         data: {'description': 'X'},
         id: 'id-1',
       );
@@ -41,7 +41,7 @@ void main() {
         await repo.write(
           collection: 'items',
           endpoint: '/items',
-          method: RequestMethod.post,
+          method: RequestMethod.POST,
           data: {'description': 'Y'},
           id: 'id-2',
         );
@@ -58,7 +58,7 @@ void main() {
       await repo.write(
         collection: 'items',
         endpoint: '/items',
-        method: RequestMethod.post,
+        method: RequestMethod.POST,
         data: {'description': 'tagged'},
       );
       await _settle();
@@ -71,7 +71,7 @@ void main() {
       await repo.write(
         collection: 'items',
         endpoint: '/items',
-        method: RequestMethod.post,
+        method: RequestMethod.POST,
         data: {'a': 1},
       );
       await _settle();
@@ -90,7 +90,7 @@ void main() {
       await repo.write(
         collection: 'items',
         endpoint: '/items',
-        method: RequestMethod.post,
+        method: RequestMethod.POST,
         data: {'a': 1},
         id: 'id-fatal',
       );
@@ -121,7 +121,7 @@ void main() {
       final out = await repo.fetch(
         'items',
         '/items',
-        strategy: CacheStrategy.cacheOnly,
+        strategy: CacheStrategy.CACHE_ONLY,
       );
       expect(out.single['name'], 'pushed');
     });
@@ -136,7 +136,7 @@ void main() {
       final out = await repo.fetch(
         'items',
         '/items',
-        strategy: CacheStrategy.cacheOnly,
+        strategy: CacheStrategy.CACHE_ONLY,
       );
       expect(out, isEmpty);
     });

@@ -5,14 +5,15 @@ Future<Database> openSembastDatabase({
   required int version,
   SembastCodec? codec,
   required Future<void> Function(Database db, int oldVersion, int newVersion)
-  onVersionChanged,
+      onVersionChanged,
 }) async {
   return databaseFactoryWeb.openDatabase(
     dbName,
     version: version,
     codec: codec,
     onVersionChanged: (Database db, int oldVersion, int newVersion) async {
-      if (oldVersion < newVersion) await onVersionChanged(db, oldVersion, newVersion);
+      if (oldVersion < newVersion)
+        await onVersionChanged(db, oldVersion, newVersion);
     },
   );
 }
