@@ -17,8 +17,9 @@ Future<Database> openSembastDatabase({
     version: version,
     codec: codec,
     onVersionChanged: (db, oldVersion, newVersion) async {
-      if (oldVersion < newVersion)
+      if (oldVersion < newVersion) {
         await onVersionChanged(db, oldVersion, newVersion);
+      }
     },
   );
 }

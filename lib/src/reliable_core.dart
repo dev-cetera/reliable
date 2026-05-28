@@ -272,7 +272,10 @@ final class OfflineAction {
 }
 
 typedef MigrationCallback<T> = Future<void> Function(
-    T db, int oldVersion, int newVersion);
+  T db,
+  int oldVersion,
+  int newVersio,
+);
 
 /// An adapter interface for storage backends.
 abstract interface class StorageAdapter<T> {

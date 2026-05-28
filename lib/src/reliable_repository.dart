@@ -173,7 +173,8 @@ class ReliableRepository {
         // apart from a legitimately empty collection. Log so we don't lose
         // the underlying cause when investigating a wipe report.
         Log.err(
-            'reliable snapshotCollectionSizes read failed for $collection: $error');
+          'reliable snapshotCollectionSizes read failed for $collection: $error',
+        );
       }
       final mem = _memCache[collection]?.length ?? -1;
       out[collection] = (disk: disk, mem: mem);

@@ -35,7 +35,9 @@ class ReliableAesEncryption implements ReliableEncryption {
     final iv = IV(
       Uint8List.fromList(
         List<int>.generate(
-            _kIvLengthBytes, (_) => Random.secure().nextInt(256)),
+          _kIvLengthBytes,
+          (_) => Random.secure().nextInt(256),
+        ),
       ),
     );
     final encrypted = _encrypter.encrypt(input, iv: iv);
