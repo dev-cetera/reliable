@@ -1,5 +1,3 @@
-# CLAUDE.md
-
 ## What this package is
 
 An **offline-first, secure data repository** for Dart/Flutter. The user supplies a `NetworkAdapter` (HTTP client) and a `StorageAdapter` (durable cache + sync queue); `ReliableRepository` wires them into an optimistic-write, cache-first read flow with retry + AES-at-rest.

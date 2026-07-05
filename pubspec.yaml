@@ -19,7 +19,7 @@ funding:
   - https://www.patreon.com/c/robelator
   - https://github.com/sponsors/robelator
 description: "An offline-first, secure data repository with automatic sync, retry, and encryption for Dart & Flutter."
-version: 0.1.0
+version: 0.1.1
 
 environment:
   sdk: ">=3.5.0 <4.0.0"
@@ -38,7 +38,7 @@ dependencies:
   path: ^1.9.1
   encrypt: ^5.0.3
   
-  df_log: ^0.5.1
+  df_log: ^0.6.1
 
 dev_dependencies:
   flutter_test:
