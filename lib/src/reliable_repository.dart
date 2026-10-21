@@ -207,6 +207,15 @@ class ReliableRepository {
     return error is ReliableNetworkException && error.statusCode != null;
   }
 
+  /// Whether [error] says the request got no answer at all (a
+  /// [ReliableNetworkException] without a `statusCode`: offline, a dropped
+  /// connection, a timeout, a request the adapter chose not to send). That is
+  /// the expected state of an offline-first app, not a bug, so it is logged
+  /// with `Log.alert` whether or not the cache could answer instead.
+  static bool _gotNoAnswer(Object error) {
+    return error is ReliableNetworkException && error.statusCode == null;
+  }
+
   void _audit(String event, [Map<String, dynamic>? details]) {
     final hook = auditLog;
     if (hook != null) {
@@ -382,7 +391,11 @@ class ReliableRepository {
       }
 
       if (strategy != CacheStrategy.NETWORK_OR_ELSE_CACHE) {
-        Log.err(threw);
+        if (_gotNoAnswer(error)) {
+          Log.alert(threw);
+        } else {
+          Log.err(threw);
+        }
         audit(servedFromCache: false);
         rethrow;
       }
@@ -504,7 +517,8 @@ class ReliableRepository {
           'cached=${cached != null}';
       // The cache answered, so the caller got a result: a warning, not an
       // error. Unless the answer itself was malformed, which no retry fixes.
-      if (servedFromCache && !_isBadAnswerOrBug(error)) {
+      if (_gotNoAnswer(error) ||
+          (servedFromCache && !_isBadAnswerOrBug(error))) {
         Log.alert(message);
       } else {
         Log.err(message);

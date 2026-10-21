@@ -197,7 +197,7 @@ class DioNetworkAdapter implements NetworkAdapter {
 }
 ```
 
-The translation rule that matters: convert client/protocol errors into `ReliableNetworkException` with `isFatal` set correctly. Fatal errors drop the action from the queue immediately; non-fatal errors get exponential backoff. Returning the decoded body (Map, List, or null) is the only other contract. For a list read, `reliable` unwraps a bare array, `{data: [...]}` (or `{data: {...}}` for one document), and `{items: [...]}`; a `null` body reads as an empty list. Any other shape throws a `FormatException` naming the keys it saw — never a silent empty list, which would leave `networkOrElseCache` serving stale cache forever.
+The translation rule that matters: convert client/protocol errors into `ReliableNetworkException` with `isFatal` set correctly, and leave `statusCode` null only when the request got no answer at all (offline, dropped, timed out) — the repository logs that as a warning, not an error, so don't wrap a bug in a status-less exception. Fatal errors drop the action from the queue immediately; non-fatal errors get exponential backoff. Returning the decoded body (Map, List, or null) is the only other contract. For a list read, `reliable` unwraps a bare array, `{data: [...]}` (or `{data: {...}}` for one document), and `{items: [...]}`; a `null` body reads as an empty list. Any other shape throws a `FormatException` naming the keys it saw — never a silent empty list, which would leave `networkOrElseCache` serving stale cache forever.
 
 ## Working with envelope-style responses
 

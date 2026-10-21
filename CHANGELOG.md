@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## [0.2.1]
+
+- Released @ 10/2026 (UTC)
+- A read that got no answer at all (a `ReliableNetworkException` without a `statusCode`: offline, dropped connection, timeout, a request the adapter chose not to send) now logs at `Log.alert` whether or not the cache could answer, and also when the error propagates; being offline is expected, not a bug. Server error statuses, malformed answers and bugs still log at `Log.err`. `ReliableNetworkException.statusCode` documents the contract: an adapter throws a status-less exception only for "no answer", and lets a bug propagate as itself
+
 ## [0.2.0]
 
 - Released @ 10/2026 (UTC)

@@ -259,9 +259,23 @@ void main() {
       expect(logsTagged(#alert, 'fetch items /items threw'), isEmpty);
     });
 
-    test('fetch: a failed request with nothing to fall back to is an error',
+    test('fetch: no answer with nothing to fall back to is still an alert',
         () async {
       network.error = const ReliableNetworkException(message: 'offline');
+      await expectLater(
+        repo.fetch(_kItems, '/items', strategy: CacheStrategy.NETWORK_ONLY),
+        throwsA(isA<ReliableNetworkException>()),
+      );
+      expect(logsTagged(#alert, 'fetch items /items threw'), hasLength(1));
+      expect(logsTagged(#err, 'fetch items /items threw'), isEmpty);
+    });
+
+    test('fetch: a server error with nothing to fall back to is an error',
+        () async {
+      network.error = const ReliableNetworkException(
+        message: 'server error',
+        statusCode: 500,
+      );
       await expectLater(
         repo.fetch(_kItems, '/items', strategy: CacheStrategy.NETWORK_ONLY),
         throwsA(isA<ReliableNetworkException>()),
@@ -269,8 +283,7 @@ void main() {
       expect(logsTagged(#err, 'fetch items /items threw'), hasLength(1));
     });
 
-    test('fetchOne: served from cache is an alert, a miss is an error',
-        () async {
+    test('fetchOne: no answer is an alert, cached or not', () async {
       storage.docs[_kItems] = {
         'a': {'id': 'a'},
       };
@@ -285,6 +298,22 @@ void main() {
       expect(logsTagged(#alert, 'fetchOne items/a'), hasLength(1));
       expect(logsTagged(#err, 'fetchOne items/a'), isEmpty);
 
+      final miss = await repo.fetchOne(
+        _kItems,
+        '/items/b',
+        id: 'b',
+        strategy: CacheStrategy.NETWORK_OR_ELSE_CACHE,
+      );
+      expect(miss, isNull);
+      expect(logsTagged(#alert, 'fetchOne items/b'), hasLength(1));
+      expect(logsTagged(#err, 'fetchOne items/b'), isEmpty);
+    });
+
+    test('fetchOne: a server error on a cache miss is an error', () async {
+      network.error = const ReliableNetworkException(
+        message: 'server error',
+        statusCode: 500,
+      );
       final miss = await repo.fetchOne(
         _kItems,
         '/items/b',

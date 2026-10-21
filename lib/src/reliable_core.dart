@@ -96,6 +96,12 @@ enum RequestMethod { GET, POST, PUT, PATCH, DELETE }
 /// Exception class for network-related errors specific to Reliable.
 class ReliableNetworkException implements Exception {
   final String message;
+
+  /// The HTTP status the server answered with. Null means the request got no
+  /// answer at all (offline, a dropped connection, a timeout, or a request
+  /// the adapter chose not to send), which the repository logs as a warning,
+  /// not an error. An adapter must not throw a status-less exception for
+  /// anything else: let a bug propagate as itself.
   final int? statusCode;
   final bool isFatal;
 

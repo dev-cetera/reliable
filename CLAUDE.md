@@ -59,7 +59,7 @@ The previous name `offline_queue` shared a Sembast store with any app collection
 
 ### Log levels on the read path
 
-A failed request the cache answered (`NETWORK_OR_ELSE_CACHE`) logs `Log.alert`; `Log.err` only when nothing answered, the error propagates, or the error is a `FormatException`/`Error` (a malformed answer or a bug — retrying will not fix it). A good read whose cache write throws returns normally and logs `Log.alert` + `REPO_CACHE_WRITE_FAILED`. Host apps promote `Log.err` to crash reporting, so don't raise these levels casually.
+A request that got no answer at all (a `ReliableNetworkException` without a `statusCode`) logs `Log.alert`, cached or not, propagated or not: offline is expected. Otherwise a failed request the cache answered (`NETWORK_OR_ELSE_CACHE`) logs `Log.alert`; `Log.err` when nothing answered, the error propagates, the server answered with an error status, or the error is a `FormatException`/`Error` (a malformed answer or a bug — retrying will not fix it). A good read whose cache write throws returns normally and logs `Log.alert` + `REPO_CACHE_WRITE_FAILED`. Host apps promote `Log.err` to crash reporting, so don't raise these levels casually.
 
 ### `_parseResponse` never guesses
 
