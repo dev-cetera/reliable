@@ -53,6 +53,22 @@ The previous name `offline_queue` shared a Sembast store with any app collection
 
 `DataMigration` (in `reliable_core.dart`) is the on-disk doc-shape migration mechanism — separate from the storage adapter's `version`/`onUpgrade` callback, which is for the *storage backend's* schema. Each cached doc carries `ReliableSchema.colSchemaVersion` (`_reliable_schema_v`); on first read of a collection, `_ensureMemCache` walks the registered migrations in ascending `toVersion` order and brings every stale doc forward, re-persisting it. Fresh network docs are tagged with the latest version on write (via `_persistDoc`). The schema-version field is stripped before docs enter `_memCache`, so callers never see it. When no migrations are registered for a collection, the system is a true no-op (no field injected on disk, no copies on read) — this is the hot path for compledo today and must stay that way.
 
+### Cache epoch: a reset stops in-flight reads writing
+
+`fetch`, `fetchOne` and `applyServerChange` note `_cacheEpoch` before their first await. `purgeCollections` (its collections), `clearUserData` and a `setActiveUser` switch from one user to another (every collection) bump it synchronously. Every cache write that follows a read checks `_wasResetSince` and is skipped (breadcrumb `REPO_CACHE_WRITE_SKIPPED_AFTER_RESET`) — the caller still gets the network answer, unmerged with the new owner's queue. `_updateStorage`'s clear-then-put sequence and the purge's disk clear run under `_cacheWriteLock` with the check before every step, so a purge never interleaves with half a write. `_ensureMemCache` discards a disk read that straddled a reset. Without this, a sign-out with an items fetch in flight wrote the previous account's rows into the next account's cache.
+
+### Log levels on the read path
+
+A failed request the cache answered (`NETWORK_OR_ELSE_CACHE`) logs `Log.alert`; `Log.err` only when nothing answered, the error propagates, or the error is a `FormatException`/`Error` (a malformed answer or a bug — retrying will not fix it). A good read whose cache write throws returns normally and logs `Log.alert` + `REPO_CACHE_WRITE_FAILED`. Host apps promote `Log.err` to crash reporting, so don't raise these levels casually.
+
+### `_parseResponse` never guesses
+
+Known list shapes: bare array, `{data: [...]}`, `{data: {...}}`, `{items: [...]}`, and `null` (→ `[]`). Anything else throws `FormatException`. A silent `[]` would trip the empty-list guard and serve stale cache forever.
+
+### SembastAdapter dead-connection recovery
+
+Ported from compledo's `RecoveringStorageAdapter`: matches WebKit's `without an in-progress transaction` / `database connection is closing` and Sembast's `database is closed`, reopens once (shared by concurrent failures, guarded by a connection counter so a stale failure can't close the fresh connection), retries once, and latches `recoveryGaveUp` if the reopen fails, exceeds `reopenTimeout`, or the retry dies again. A timed-out reopen is never restarted. Tests inject `openDatabase` over `databaseFactoryMemory` and simulate death by closing `db`.
+
 ### Server-push methods bypass the queue
 
 `applyServerChange` and `applyServerDelete` write straight to mem + disk and **do not** enqueue an `OfflineAction`. They're for the inbound SSE/webhook channel where the change already exists upstream. Don't add queue calls to them.
@@ -95,7 +111,7 @@ The tests use in-memory `_FakeStorage` / `_FakeNetwork` doubles defined inline i
 
 This package uses `package:flutter_lints/recommended.yaml` as its base — **not** the workspace-canonical `dart_package_template/flutter_analysis_options.yaml`. `@scripts/standardize_all_analysis_options.ps1` will overwrite this if run; only run it if you intend to adopt the workspace baseline (which would add `custom_lint` + `df_safer_dart_lints` and strict-cast/inference/raw-type flags).
 
-The `analyzer.plugins: [custom_lint]` block is present but no `custom_lint` dependency is declared — running `dart run custom_lint` here is a no-op.
+There is no `analyzer.plugins` block: the old `custom_lint` entry had no matching dependency and newer SDKs warn on legacy plugins, so it was removed in 0.2.0.
 
 ## Release flow (overrides the workspace default)
 

@@ -41,6 +41,34 @@ class ReliableRepository {
   final Set<String> _loadedCollections = {};
   String? _currentUserId;
 
+  // --- CACHE EPOCH ---
+  //
+  // A read writes its answer into the cache when the answer lands, which can
+  // be after a sign-out has purged that cache for the next account. To stop
+  // the previous account's rows landing in it, every read notes
+  // [_cacheEpoch] before it asks, and every cache write that follows checks
+  // whether its collection was reset since then. If it was, the write is
+  // skipped (the caller still gets the answer it asked for).
+  //
+  // A reset is [purgeCollections] (the collections it names),
+  // [clearUserData] (every collection) or [setActiveUser] switching from one
+  // user to another (every collection).
+
+  /// Moves on every cache reset.
+  int _cacheEpoch = 0;
+
+  /// The epoch of the last reset of every collection at once.
+  int _allCollectionsResetAt = 0;
+
+  /// Per collection: the epoch of its last [purgeCollections].
+  final Map<String, int> _collectionResetAt = {};
+
+  /// Serialises the multi-step cache writes that follow a read with the
+  /// purge's disk clear, so a purge never interleaves with half a write: a
+  /// write step either finishes before the clear (which then removes it) or
+  /// sees the reset and stops.
+  final _cacheWriteLock = Lock();
+
   ReliableRepository({
     required NetworkAdapter api,
     required StorageAdapter<dynamic> storage,
@@ -105,6 +133,80 @@ class ReliableRepository {
     await _storage.writeDocument(collection: collection, id: id, data: stored);
   }
 
+  /// Whether [collection] was reset (purged, or handed to another user)
+  /// after [epoch] was noted.
+  bool _wasResetSince(String collection, int epoch) {
+    return _allCollectionsResetAt > epoch ||
+        (_collectionResetAt[collection] ?? 0) > epoch;
+  }
+
+  void _resetAllCollections() {
+    _cacheEpoch++;
+    _allCollectionsResetAt = _cacheEpoch;
+  }
+
+  /// Runs [write] under [_cacheWriteLock], unless [collection] was reset
+  /// since [epoch]. Returns false when it skipped the write.
+  Future<bool> _writeUnlessReset(
+    String collection,
+    int epoch,
+    Future<void> Function() write,
+  ) {
+    return _cacheWriteLock.synchronized(() async {
+      if (_wasResetSince(collection, epoch)) return false;
+      await write();
+      return true;
+    });
+  }
+
+  /// The breadcrumb for an answer that was not cached because the cache was
+  /// reset while the read was in flight. Expected on every sign-out.
+  void _logSkippedAfterReset(String operation, String collection) {
+    Log.info(
+      '$operation $collection: cache reset while the read was in flight '
+      '— answer not cached',
+    );
+    _audit('REPO_CACHE_WRITE_SKIPPED_AFTER_RESET', {
+      'operation': operation,
+      'collection': collection,
+    });
+  }
+
+  /// The warning for a read whose answer arrived but whose cache copy could
+  /// not be saved. The read itself succeeded, so this is not an error of
+  /// the read; the next read rewrites the copy.
+  void _logCacheWriteFailed(
+    String operation,
+    String collection,
+    String endpoint,
+    Object error,
+  ) {
+    Log.alert(
+      '$operation $collection $endpoint: read succeeded but the cache copy '
+      'was not saved (${error.runtimeType}): $error',
+    );
+    _audit('REPO_CACHE_WRITE_FAILED', {
+      'operation': operation,
+      'collection': collection,
+      'endpoint': endpoint,
+      'errorType': '${error.runtimeType}',
+      'error': '$error',
+    });
+  }
+
+  /// Whether [error] must be logged with `Log.err` even when the cache
+  /// answers instead, because it will not go away by itself:
+  /// - the answer could not be read (a malformed body, see [_parseResponse]);
+  /// - a bug (an [Error]);
+  /// - the server answered, with an error status (a [ReliableNetworkException]
+  ///   carrying a `statusCode`: a 401, a 5xx). Only a request that got no
+  ///   answer at all (offline, a dropped connection, a timeout) is the
+  ///   expected, user-invisible case that drops to `Log.alert`.
+  static bool _isBadAnswerOrBug(Object error) {
+    if (error is FormatException || error is Error) return true;
+    return error is ReliableNetworkException && error.statusCode != null;
+  }
+
   void _audit(String event, [Map<String, dynamic>? details]) {
     final hook = auditLog;
     if (hook != null) {
@@ -134,8 +236,17 @@ class ReliableRepository {
   // --- AUTH ---
 
   /// Sets the active user context. Only actions for this user will be synced.
+  ///
+  /// Switching from one user to another (or to none) also stops any read
+  /// still in flight for the previous user from writing its answer into the
+  /// cache. Setting a user when none was set does not: nothing in flight
+  /// belonged to anyone else.
   void setActiveUser(String? userId) {
+    final previousUserId = _currentUserId;
     _currentUserId = userId;
+    if (previousUserId != null && previousUserId != userId) {
+      _resetAllCollections();
+    }
     if (userId != null) _processQueue();
   }
 
@@ -144,10 +255,13 @@ class ReliableRepository {
 
   /// Clears the in-memory cache and optionally removes pending actions for the
   /// given user. Typically called on logout.
+  ///
+  /// Any read still in flight will not write its answer into the cache.
   Future<void> clearUserData(
     String userId, {
     bool clearPendingActions = true,
   }) async {
+    _resetAllCollections();
     _memCache.clear();
     _loadedCollections.clear();
     if (_currentUserId == userId) _currentUserId = null;
@@ -188,6 +302,9 @@ class ReliableRepository {
   /// queue). Caller is responsible for naming only the collections that
   /// belong to the namespace being purged — collections aren't user-scoped
   /// at the storage layer.
+  ///
+  /// Any read of these collections still in flight will not write its
+  /// answer into the cache, even one already part-way through writing it.
   Future<void> purgeCollections(List<String> collections) async {
     final stack = StackTrace.current.toString().split('\n').take(6).join(' | ');
     Log.alert(
@@ -197,10 +314,17 @@ class ReliableRepository {
       'collections': collections,
       'stack': stack,
     });
+    // Before any await, so a write landing from here on already sees it.
+    _cacheEpoch++;
     for (final collection in collections) {
+      _collectionResetAt[collection] = _cacheEpoch;
       _memCache.remove(collection);
       _loadedCollections.remove(collection);
-      await _storage.clearCollection(collection: collection);
+    }
+    for (final collection in collections) {
+      await _cacheWriteLock.synchronized(
+        () => _storage.clearCollection(collection: collection),
+      );
     }
   }
 
@@ -216,6 +340,8 @@ class ReliableRepository {
     CacheStrategy strategy = CacheStrategy.CACHE_OR_ELSE_NETWORK,
     Map<String, dynamic>? queryParams,
   }) async {
+    // Noted before anything awaits; see "CACHE EPOCH" above.
+    final epoch = _cacheEpoch;
     await _ensureMemCache(collection);
 
     List<Map<String, dynamic>> getLocal() {
@@ -230,64 +356,101 @@ class ReliableRepository {
       }
     }
 
+    final List<Map<String, dynamic>> netList;
     try {
       final response = await _api.request(
         endpoint,
         RequestMethod.GET,
         queryParams: queryParams,
       );
-      final netList = _parseResponse(response);
-      Log.info(
-        'fetch $collection $endpoint → net=${netList.length} '
-        'memCache=${_memCache[collection]?.length ?? 0}',
-      );
-      _audit('REPO_FETCH_NET', {
-        'collection': collection,
-        'endpoint': endpoint,
-        'net': netList.length,
-        'memCache': _memCache[collection]?.length ?? 0,
-      });
-      await _updateStorage(collection, netList);
-      // Mirror the disk guard in _updateStorage: a 200 with an empty body
-      // over a non-empty cache is almost always a transient server-side
-      // filter glitch (auth/scope race, identity drift, listing-query
-      // regression). Returning [] here would render an empty timeline even
-      // though the cache (and the database) still hold the data. Single
-      // deletions arrive via applyServerDelete, so the bulk-list endpoint
-      // is not the legitimate channel for a real "everything is gone" event.
-      if (netList.isEmpty) {
-        final local = getLocal();
-        if (local.isNotEmpty) {
-          Log.alert(
-            'fetch $collection: net=[] '
-            'falling back to ${local.length} cached',
-          );
-          _audit('REPO_FETCH_NET_EMPTY_FALLBACK_CACHE', {
-            'collection': collection,
-            'cacheSize': local.length,
-          });
-          return await _mergeOfflineChanges(collection, local);
-        }
-      }
-      return await _mergeOfflineChanges(collection, netList);
+      netList = _parseResponse(response);
     } catch (error) {
-      Log.err(
-        'fetch $collection $endpoint threw (${error.runtimeType}): '
-        '$error — strategy=$strategy memCache=${_memCache[collection]?.length ?? 0}',
-      );
-      _audit('REPO_FETCH_THREW', {
-        'collection': collection,
-        'endpoint': endpoint,
-        'errorType': '${error.runtimeType}',
-        'error': '$error',
-        'strategy': '$strategy',
-        'memCache': _memCache[collection]?.length ?? 0,
-      });
-      if (strategy == CacheStrategy.NETWORK_OR_ELSE_CACHE) {
-        return await _mergeOfflineChanges(collection, getLocal());
+      final memCacheSize = _memCache[collection]?.length ?? 0;
+      final threw = 'fetch $collection $endpoint threw '
+          '(${error.runtimeType}): $error — strategy=$strategy '
+          'memCache=$memCacheSize';
+      void audit({required bool servedFromCache}) {
+        _audit('REPO_FETCH_THREW', {
+          'collection': collection,
+          'endpoint': endpoint,
+          'errorType': '${error.runtimeType}',
+          'error': '$error',
+          'strategy': '$strategy',
+          'memCache': memCacheSize,
+          'servedFromCache': servedFromCache,
+        });
       }
-      rethrow;
+
+      if (strategy != CacheStrategy.NETWORK_OR_ELSE_CACHE) {
+        Log.err(threw);
+        audit(servedFromCache: false);
+        rethrow;
+      }
+      final List<Map<String, dynamic>> cached;
+      try {
+        cached = await _mergeOfflineChanges(collection, getLocal());
+      } catch (cacheError) {
+        Log.err('$threw — and the cache could not answer either: $cacheError');
+        audit(servedFromCache: false);
+        rethrow;
+      }
+      // The cache answered, so the caller got a result: a warning, not an
+      // error. Unless the answer itself was malformed, which no retry fixes.
+      final served = '$threw — served ${cached.length} from cache';
+      if (_isBadAnswerOrBug(error)) {
+        Log.err(served);
+      } else {
+        Log.alert(served);
+      }
+      audit(servedFromCache: true);
+      return cached;
     }
+
+    Log.info(
+      'fetch $collection $endpoint → net=${netList.length} '
+      'memCache=${_memCache[collection]?.length ?? 0}',
+    );
+    _audit('REPO_FETCH_NET', {
+      'collection': collection,
+      'endpoint': endpoint,
+      'net': netList.length,
+      'memCache': _memCache[collection]?.length ?? 0,
+    });
+    try {
+      await _updateStorage(collection, netList, epoch);
+    } catch (error) {
+      // The read succeeded; only its cache copy is missing. The memory
+      // cache already holds the answer, so return it as normal.
+      _logCacheWriteFailed('fetch', collection, endpoint, error);
+    }
+    if (_wasResetSince(collection, epoch)) {
+      // The cache now belongs to whoever reset it, along with the pending
+      // queue and its fallback rows, so the caller gets the bare answer.
+      _logSkippedAfterReset('fetch', collection);
+      return netList;
+    }
+    // Mirror the disk guard in _updateStorage: a 200 with an empty body
+    // over a non-empty cache is almost always a transient server-side
+    // filter glitch (auth/scope race, identity drift, listing-query
+    // regression). Returning [] here would render an empty timeline even
+    // though the cache (and the database) still hold the data. Single
+    // deletions arrive via applyServerDelete, so the bulk-list endpoint
+    // is not the legitimate channel for a real "everything is gone" event.
+    if (netList.isEmpty) {
+      final local = getLocal();
+      if (local.isNotEmpty) {
+        Log.alert(
+          'fetch $collection: net=[] '
+          'falling back to ${local.length} cached',
+        );
+        _audit('REPO_FETCH_NET_EMPTY_FALLBACK_CACHE', {
+          'collection': collection,
+          'cacheSize': local.length,
+        });
+        return await _mergeOfflineChanges(collection, local);
+      }
+    }
+    return await _mergeOfflineChanges(collection, netList);
   }
 
   // --- READ (Single Document) ---
@@ -303,6 +466,8 @@ class ReliableRepository {
     CacheStrategy strategy = CacheStrategy.CACHE_OR_ELSE_NETWORK,
     Map<String, dynamic>? queryParams,
   }) async {
+    // Noted before anything awaits; see "CACHE EPOCH" above.
+    final epoch = _cacheEpoch;
     await _ensureMemCache(collection);
 
     if (strategy == CacheStrategy.CACHE_OR_ELSE_NETWORK ||
@@ -311,74 +476,95 @@ class ReliableRepository {
       if (cached != null || strategy == CacheStrategy.CACHE_ONLY) return cached;
     }
 
+    final Map<String, dynamic> docWithId;
     try {
       final response = await _api.request(
         endpoint,
         RequestMethod.GET,
         queryParams: queryParams,
       );
-      if (response is Map) {
-        Map<String, dynamic> doc;
-        if (response['data'] is Map) {
-          doc = Map<String, dynamic>.from(response['data'] as Map);
-        } else {
-          doc = Map<String, dynamic>.from(response);
-        }
-        // Inject the lookup id so envelope-style responses (no natural id
-        // field, e.g. /v1/routines) survive disk rehydration. Without this,
-        // _ensureMemCache re-keys the doc under '' on the next boot and
-        // fetchOne(id: ...) returns null even though the data is on disk.
-        final docWithId = {...doc, idField: id};
-        final cached = _memCache[collection]?[id];
-        if (cached != null) {
-          Log.info(
-            'fetchOne $collection/$id $endpoint overwrite: '
-            'cached keys=${cached.keys.toList()} → '
-            'net keys=${docWithId.keys.toList()} '
-            '(cached size=${cached.length} net size=${docWithId.length})',
-          );
-          _audit('REPO_FETCH_ONE_OVERWRITE', {
-            'collection': collection,
-            'id': id,
-            'cachedKeys': cached.keys.toList(),
-            'netKeys': docWithId.keys.toList(),
-          });
-        } else {
-          Log.info(
-            'fetchOne $collection/$id $endpoint initial: '
-            'net keys=${docWithId.keys.toList()}',
-          );
-          _audit('REPO_FETCH_ONE_INITIAL', {
-            'collection': collection,
-            'id': id,
-            'netKeys': docWithId.keys.toList(),
-          });
-        }
-        _memCache[collection] ??= {};
-        _memCache[collection]![id] = docWithId;
-        await _persistDoc(collection, id, docWithId);
-        return docWithId;
+      if (response is! Map) return null;
+      final Map<String, dynamic> doc;
+      if (response['data'] is Map) {
+        doc = Map<String, dynamic>.from(response['data'] as Map);
+      } else {
+        doc = Map<String, dynamic>.from(response);
       }
-      return null;
+      // Inject the lookup id so envelope-style responses (no natural id
+      // field, e.g. /v1/routines) survive disk rehydration. Without this,
+      // _ensureMemCache re-keys the doc under '' on the next boot and
+      // fetchOne(id: ...) returns null even though the data is on disk.
+      docWithId = {...doc, idField: id};
     } catch (error) {
-      Log.err(
-        'fetchOne $collection/$id $endpoint threw '
-        '(${error.runtimeType}): $error — '
-        'cached=${_memCache[collection]?[id] != null}',
-      );
+      final cached = _memCache[collection]?[id];
+      final servedFromCache =
+          strategy == CacheStrategy.NETWORK_OR_ELSE_CACHE && cached != null;
+      final message = 'fetchOne $collection/$id $endpoint threw '
+          '(${error.runtimeType}): $error — '
+          'cached=${cached != null}';
+      // The cache answered, so the caller got a result: a warning, not an
+      // error. Unless the answer itself was malformed, which no retry fixes.
+      if (servedFromCache && !_isBadAnswerOrBug(error)) {
+        Log.alert(message);
+      } else {
+        Log.err(message);
+      }
       _audit('REPO_FETCH_ONE_THREW', {
         'collection': collection,
         'id': id,
         'endpoint': endpoint,
         'errorType': '${error.runtimeType}',
         'error': '$error',
-        'cached': _memCache[collection]?[id] != null,
+        'cached': cached != null,
+        'servedFromCache': servedFromCache,
       });
-      if (strategy == CacheStrategy.NETWORK_OR_ELSE_CACHE) {
-        return _memCache[collection]?[id];
-      }
+      if (strategy == CacheStrategy.NETWORK_OR_ELSE_CACHE) return cached;
       rethrow;
     }
+
+    if (_wasResetSince(collection, epoch)) {
+      _logSkippedAfterReset('fetchOne', collection);
+      return docWithId;
+    }
+    final cached = _memCache[collection]?[id];
+    if (cached != null) {
+      Log.info(
+        'fetchOne $collection/$id $endpoint overwrite: '
+        'cached keys=${cached.keys.toList()} → '
+        'net keys=${docWithId.keys.toList()} '
+        '(cached size=${cached.length} net size=${docWithId.length})',
+      );
+      _audit('REPO_FETCH_ONE_OVERWRITE', {
+        'collection': collection,
+        'id': id,
+        'cachedKeys': cached.keys.toList(),
+        'netKeys': docWithId.keys.toList(),
+      });
+    } else {
+      Log.info(
+        'fetchOne $collection/$id $endpoint initial: '
+        'net keys=${docWithId.keys.toList()}',
+      );
+      _audit('REPO_FETCH_ONE_INITIAL', {
+        'collection': collection,
+        'id': id,
+        'netKeys': docWithId.keys.toList(),
+      });
+    }
+    _memCache[collection] ??= {};
+    _memCache[collection]![id] = docWithId;
+    try {
+      final saved = await _writeUnlessReset(
+        collection,
+        epoch,
+        () => _persistDoc(collection, id, docWithId),
+      );
+      if (!saved) _logSkippedAfterReset('fetchOne', collection);
+    } catch (error) {
+      // The read succeeded; only its cache copy is missing.
+      _logCacheWriteFailed('fetchOne', collection, endpoint, error);
+    }
+    return docWithId;
   }
 
   /// Same as [fetchOne] but strips the internally-injected [idField] key from
@@ -487,13 +673,25 @@ class ReliableRepository {
     required String id,
     required Map<String, dynamic> data,
   }) async {
+    // A change that was on its way in when the cache was reset belongs to
+    // whoever had the cache before; see "CACHE EPOCH" above.
+    final epoch = _cacheEpoch;
     await _ensureMemCache(collection);
+    if (_wasResetSince(collection, epoch)) {
+      _logSkippedAfterReset('applyServerChange', collection);
+      return;
+    }
     // Inject the lookup id so envelope-style writes (no natural id field)
     // survive disk rehydration — _ensureMemCache keys by data[idField].
     final docWithId = {...data, idField: id};
     _memCache[collection] ??= {};
     _memCache[collection]![id] = docWithId;
-    await _persistDoc(collection, id, docWithId);
+    final saved = await _writeUnlessReset(
+      collection,
+      epoch,
+      () => _persistDoc(collection, id, docWithId),
+    );
+    if (!saved) _logSkippedAfterReset('applyServerChange', collection);
   }
 
   /// Remove a document from the local cache when the server reports deletion.
@@ -606,7 +804,11 @@ class ReliableRepository {
   Future<void> _ensureMemCache(String collection) async {
     if (_loadedCollections.contains(collection)) return;
 
+    final epoch = _cacheEpoch;
     final diskData = await _storage.readCollection(collection: collection);
+    // A read that straddled a reset may hold rows the reset removed. Leave
+    // the collection unloaded; the next call reads the disk again.
+    if (_wasResetSince(collection, epoch)) return;
     final migrations = _dataMigrations[collection];
     final latestVersion = _latestSchemaVersion(collection);
     final out = <String, Map<String, dynamic>>{};
@@ -640,7 +842,13 @@ class ReliableRepository {
         if (doc != null) {
           final docId =
               (doc[idField] ?? doc[ReliableSchema.colDocId] ?? '').toString();
-          await _persistDoc(collection, docId, _stripSchemaVersion(doc));
+          final migrated = _stripSchemaVersion(doc);
+          final saved = await _writeUnlessReset(
+            collection,
+            epoch,
+            () => _persistDoc(collection, docId, migrated),
+          );
+          if (!saved) return;
         }
       }
 
@@ -651,6 +859,7 @@ class ReliableRepository {
       out[docId] = clean;
     }
 
+    if (_wasResetSince(collection, epoch)) return;
     _memCache[collection] = out;
     _loadedCollections.add(collection);
   }
@@ -682,10 +891,16 @@ class ReliableRepository {
     }
   }
 
+  /// Replaces [collection] in memory and on disk with [list], the answer of
+  /// a read that noted [epoch] before it asked. Does nothing, or stops
+  /// part-way, once the collection is reset since [epoch]; the caller checks
+  /// [_wasResetSince] afterwards.
   Future<void> _updateStorage(
     String collection,
     List<Map<String, dynamic>> list,
+    int epoch,
   ) async {
+    if (_wasResetSince(collection, epoch)) return;
     // An empty bulk response over a non-empty cache is almost always a
     // transient server-side filter glitch (auth/scope race, identity drift,
     // a regression in the listing query). Wiping the cache here turns a
@@ -733,11 +948,18 @@ class ReliableRepository {
       for (var e in list) (e[idField] ?? '').toString(): e,
     };
     _loadedCollections.add(collection);
-    await _storage.clearCollection(collection: collection);
-    for (var item in list) {
-      final docId = (item[idField] ?? '').toString();
-      await _persistDoc(collection, docId, item);
-    }
+    // One hold of the lock for the whole replace, with the reset checked
+    // before every step: a purge waits at most one step, then clears
+    // whatever had landed, and every step after it is skipped.
+    await _cacheWriteLock.synchronized(() async {
+      if (_wasResetSince(collection, epoch)) return;
+      await _storage.clearCollection(collection: collection);
+      for (final item in list) {
+        if (_wasResetSince(collection, epoch)) return;
+        final docId = (item[idField] ?? '').toString();
+        await _persistDoc(collection, docId, item);
+      }
+    });
   }
 
   Future<List<Map<String, dynamic>>> _mergeOfflineChanges(
@@ -776,23 +998,57 @@ class ReliableRepository {
     return map.values.toList();
   }
 
+  /// Reads a list answer. The shapes it knows:
+  ///
+  /// - a bare JSON array of objects;
+  /// - `{data: [...]}`, or `{data: {...}}` for a single object;
+  /// - `{items: [...]}`;
+  /// - no body at all (`null`), read as an empty list.
+  ///
+  /// Anything else throws a [FormatException] naming what it saw. It must
+  /// never read as `[]`: an empty answer over a populated cache is served
+  /// from the cache (see [fetch]), so an unknown shape would serve stale
+  /// rows forever without a word.
   List<Map<String, dynamic>> _parseResponse(dynamic response) {
-    if (response is List) {
-      return List<Map<String, dynamic>>.from(
-        response.map((e) => Map<String, dynamic>.from(e as Map)),
+    if (response == null) return [];
+    if (response is List) return _parseObjectList(response, 'the array');
+    if (response is Map) {
+      final data = response[_kDataKey];
+      if (data is List) return _parseObjectList(data, '"$_kDataKey"');
+      if (data is Map) return [Map<String, dynamic>.from(data)];
+      final items = response[_kItemsKey];
+      if (items is List) return _parseObjectList(items, '"$_kItemsKey"');
+      throw FormatException(
+        'reliable: unknown list response shape — an object with keys '
+        '${response.keys.toList()}; expected a bare array, '
+        '{"$_kDataKey": [...]} or {"$_kItemsKey": [...]}',
       );
     }
-    if (response is Map) {
-      final data = response['data'];
-      if (data is List) {
-        return List<Map<String, dynamic>>.from(
-          data.map((e) => Map<String, dynamic>.from(e as Map)),
-        );
-      }
-      if (data is Map) {
-        return [Map<String, dynamic>.from(data)];
-      }
-    }
-    return [];
+    throw FormatException(
+      'reliable: unknown list response shape — ${response.runtimeType}; '
+      'expected a bare array, {"$_kDataKey": [...]} or '
+      '{"$_kItemsKey": [...]}',
+    );
+  }
+
+  static const _kDataKey = 'data';
+  static const _kItemsKey = 'items';
+
+  /// [list] as maps, or a [FormatException] naming [where] the first entry
+  /// that is not an object sits.
+  List<Map<String, dynamic>> _parseObjectList(
+    List<dynamic> list,
+    String where,
+  ) {
+    return [
+      for (final (index, entry) in list.indexed)
+        if (entry is Map)
+          Map<String, dynamic>.from(entry)
+        else
+          throw FormatException(
+            'reliable: entry $index of $where is a ${entry.runtimeType}, '
+            'not an object',
+          ),
+    ];
   }
 }

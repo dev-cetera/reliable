@@ -81,9 +81,26 @@ A runnable Flutter demo with an "Online/Offline" toggle lives in [`example/`](ex
 
 | Adapter | Best for | Notes |
 | --- | --- | --- |
-| `SembastAdapter` | General-purpose, all platforms (mobile, desktop, web) | Default choice. Cross-platform via conditional imports. |
+| `SembastAdapter` | General-purpose, all platforms (mobile, desktop, web) | Default choice. Cross-platform via conditional imports. Reopens a dead database connection (see below). |
 | `SharedPreferencesAdapter` | Tiny caches, key-value-shaped data | Lightweight; not suitable for large collections. |
 | `SqliteAdapter` | Mobile-only, large datasets needing SQL | **Not exported from `reliable.dart`** — `sqflite` pulls in `dart:ffi`, which breaks web builds. Import directly: `import 'package:reliable/src/adapters/sqlite_adapter.dart';` |
+
+### Dead-connection recovery (SembastAdapter)
+
+After iOS Safari backgrounds a tab, WebKit can kill the IndexedDB connection under a live page, and every cache read and write then fails until a reload. `SembastAdapter` recognises that failure, closes and reopens the database with the arguments of the first `init`, and retries the operation once. Operations failing together share one reopen, and one arriving mid-reopen waits for it. Recovery gives up for the session (`recoveryGaveUp`) when a reopen fails, takes longer than `reopenTimeout` (default 5 s), or is followed straight away by another dead-connection failure; from then on errors propagate at once.
+
+```dart
+final storage = SembastAdapter(
+  dbName: 'app.db',
+  reopenTimeout: const Duration(seconds: 5),
+  // Optional: open a different factory, e.g. databaseFactoryMemory in tests.
+  // openDatabase: ({required dbName, required version, codec, required onVersionChanged}) => ...,
+);
+```
+
+## Signing out while reads are in flight
+
+A read writes its answer into the cache when it lands. If `purgeCollections`, `clearUserData`, or `setActiveUser` switching to another user ran in the meantime, the answer belongs to the previous user, so `reliable` does not cache it (the caller still receives it). A purge that arrives part-way through writing a list stops the write and clears what had landed.
 
 ## Encryption
 
@@ -180,7 +197,7 @@ class DioNetworkAdapter implements NetworkAdapter {
 }
 ```
 
-The translation rule that matters: convert client/protocol errors into `ReliableNetworkException` with `isFatal` set correctly. Fatal errors drop the action from the queue immediately; non-fatal errors get exponential backoff. Returning the decoded body (Map, List, or null) is the only other contract — `reliable` handles both raw lists and `{data: [...]}` envelopes.
+The translation rule that matters: convert client/protocol errors into `ReliableNetworkException` with `isFatal` set correctly. Fatal errors drop the action from the queue immediately; non-fatal errors get exponential backoff. Returning the decoded body (Map, List, or null) is the only other contract. For a list read, `reliable` unwraps a bare array, `{data: [...]}` (or `{data: {...}}` for one document), and `{items: [...]}`; a `null` body reads as an empty list. Any other shape throws a `FormatException` naming the keys it saw — never a silent empty list, which would leave `networkOrElseCache` serving stale cache forever.
 
 ## Working with envelope-style responses
 
