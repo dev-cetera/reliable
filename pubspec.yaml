@@ -34,8 +34,7 @@ dependencies:
   path: ^1.9.1
   encrypt: ^5.0.3
   
-  df_log: ^0.6.1
-
+  df_log: ^0.7.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
