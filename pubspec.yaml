@@ -17,6 +17,12 @@ repository: https://github.com/dev-cetera/reliable
 description: "An offline-first, secure data repository with automatic sync, retry, and encryption for Dart & Flutter."
 version: 0.3.2
 
+topics:
+  - offline-first
+  - sync
+  - encryption
+  - repository
+  - flutter
 environment:
   sdk: ">=3.5.0 <4.0.0"
 
