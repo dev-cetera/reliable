@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## [0.5.0]
+
+- feat: `SyncEngine`, a local-first sync engine over any `StorageAdapter`: a replica of the server's documents plus an ordered outbox of the device's own changes (`SyncMutation`, applied and sent by an app-defined `SyncMutationKind`), shown together as one view; changes survive restarts, replay under their own idempotency key, refusals are dropped and reported, and pulls page through an app-defined `SyncServer` cursor
+
 ## [0.4.0]
 
 - feat: `readCacheFirst`, `readListCacheFirst` and `readOneCacheFirst` show the cached answer at once and refresh it from the network in the background, so a screen never waits out the request timeout on a link that delivers nothing

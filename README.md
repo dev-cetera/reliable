@@ -110,6 +110,38 @@ final answer = await readListCacheFirst(
 
 A failed background refresh is already logged by the repository and leaves the cached answer showing; an error thrown by `apply` in the background is logged with `Log.err`.
 
+## Local-first sync (`SyncEngine`)
+
+`SyncEngine` keeps a **replica** of the server's documents and an **outbox**
+of the device's own changes, both in any `StorageAdapter`. What the app shows
+is the **view**: the replica with every outbox change applied on top. A change
+shows at once, survives a restart, reaches the server in the order it was
+made, and replays safely (each change's id is its idempotency key).
+
+```dart
+final engine = SyncEngine(
+  storage: storage,
+  server: myServer,           // SyncServer: pull(cursor) -> SyncPage
+  kinds: [PutNote(), DeleteNote()], // SyncMutationKind: apply + send
+  collections: {'notes'},
+  onRefused: (mutation, error) => showSnackBar('Could not save'),
+);
+await engine.open();
+await engine.mutate('PUT_NOTE', {'id': id, 'text': 'Buy milk'});
+await engine.flush(); // sends the outbox, then pulls
+engine.view('notes'); // what to show
+engine.changes.listen((_) => rebuild());
+```
+
+- A send that gets no answer (or a 5xx, 408, 429) stays and is retried on the
+  next `flush`, in order; a 4xx refusal drops that change and calls
+  `onRefused`.
+- A sent change stays in the view until a pull that started after the server
+  accepted it lands, so it never blinks out. If the server's change log has
+  not yet exposed it to that pull, the view misses it until the next pull.
+- `pull` throws `ReliableNetworkException` when the server gives no answer;
+  call it again when the connection or a server nudge says so.
+
 ## Signing out while reads are in flight
 
 A read writes its answer into the cache when it lands. If `purgeCollections`, `clearUserData`, or `setActiveUser` switching to another user ran in the meantime, the answer belongs to the previous user, so `reliable` does not cache it (the caller still receives it). A purge that arrives part-way through writing a list stops the write and clears what had landed.
