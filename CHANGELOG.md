@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## [0.4.0]
+
+- feat: `readCacheFirst`, `readListCacheFirst` and `readOneCacheFirst` show the cached answer at once and refresh it from the network in the background, so a screen never waits out the request timeout on a link that delivers nothing
+- `df_log` constraint widened to `>=0.6.1 <0.8.0` (only `Log.info`, `Log.alert` and `Log.err` are used), so apps still on `df_log` 0.6 can upgrade
+
 ## [0.3.3]
 
 - Merge branch 'main' into prod

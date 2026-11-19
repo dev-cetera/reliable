@@ -14,6 +14,7 @@
 /// An offline-first, secure, and robust data repository for Dart & Flutter.
 library;
 
+export 'src/cache_first_read.dart';
 export 'src/reliable_core.dart';
 export 'src/reliable_repository.dart';
 export 'src/adapters/sembast_adapter.dart';

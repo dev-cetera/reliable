@@ -94,6 +94,22 @@ final storage = SembastAdapter(
 );
 ```
 
+## Showing cached data at once (`readCacheFirst`)
+
+`NETWORK_OR_ELSE_CACHE` waits for the network before falling back, so on a link that is connected but delivers nothing ("lie-fi") the screen waits out the whole request timeout. `readCacheFirst` (and its `readListCacheFirst` / `readOneCacheFirst` shorthands) shows the cached answer straight away and refreshes it from the network in the background:
+
+```dart
+final answer = await readListCacheFirst(
+  what: 'items',
+  read: (strategy) => repo.fetch('items', '/items', strategy: strategy),
+  apply: (rows) => items.value = rows, // may run twice; replace, never append
+);
+// answer.source is CACHE (the network answer follows in answer.refreshed)
+// or NETWORK (nothing usable was cached, so it read network-first).
+```
+
+A failed background refresh is already logged by the repository and leaves the cached answer showing; an error thrown by `apply` in the background is logged with `Log.err`.
+
 ## Signing out while reads are in flight
 
 A read writes its answer into the cache when it lands. If `purgeCollections`, `clearUserData`, or `setActiveUser` switching to another user ran in the meantime, the answer belongs to the previous user, so `reliable` does not cache it (the caller still receives it). A purge that arrives part-way through writing a list stops the write and clears what had landed.

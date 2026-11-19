@@ -15,7 +15,7 @@ name: reliable
 homepage: https://dev-cetera.com/
 repository: https://github.com/dev-cetera/reliable
 description: "An offline-first, secure data repository with automatic sync, retry, and encryption for Dart & Flutter."
-version: 0.3.3
+version: 0.4.0
 
 topics:
   - offline-first
@@ -40,7 +40,9 @@ dependencies:
   path: ^1.9.1
   encrypt: ^5.0.3
   
-  df_log: ^0.7.0
+  # Uses only Log.info / Log.alert / Log.err, which 0.6.1 already has; the
+  # wide range keeps apps on df_log 0.6 able to upgrade reliable.
+  df_log: '>=0.6.1 <0.8.0'
 dev_dependencies:
   flutter_test:
     sdk: flutter
