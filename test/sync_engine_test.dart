@@ -274,6 +274,46 @@ void main() {
     );
   });
 
+  test('discard takes back an unsent change; a sent one stays', () async {
+    final engine = await openEngine();
+    server.isOffline = true;
+    final tick = await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'Tick'});
+    expect(await engine.discard(tick.id), isTrue);
+    expect(texts(engine), isEmpty);
+    expect(engine.pendingCount, 0);
+
+    server.isOffline = false;
+    server.losesAnswers = true;
+    final sent = await engine.mutate('PUT_NOTE', {'id': 'b', 'text': 'Sent'});
+    await engine.flush(); // carried out, answer lost: may be on the server
+    server.losesAnswers = false;
+    await engine.flush();
+    expect(await engine.discard(sent.id), isFalse);
+    expect(await engine.discard('no-such-id'), isFalse);
+    expect(server.notes.keys, ['b']);
+  });
+
+  test('a change discarded while an earlier one sends is never sent', () async {
+    final engine = await openEngine();
+    server.isOffline = true;
+    await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'First'});
+    final second =
+        await engine.mutate('PUT_NOTE', {'id': 'b', 'text': 'Second'});
+    server.isOffline = false;
+    final flushing = engine.flush();
+    expect(await engine.discard(second.id), isTrue);
+    await flushing;
+    expect(server.notes.keys, ['a']);
+    expect(engine.pendingCount, 0);
+  });
+
+  test('stores are named under the namespace', () async {
+    final engine = await openEngine();
+    expect(engine.replicaStoreName('notes'), 'SYNC_REPLICA_notes');
+    expect(engine.outboxStoreName, 'SYNC_OUTBOX');
+    expect(engine.metaStoreName, 'SYNC_META');
+  });
+
   test('clear forgets the replica, the outbox and the cursor', () async {
     server.write('a', 'x');
     final engine = await openEngine();

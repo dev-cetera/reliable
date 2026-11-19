@@ -93,15 +93,16 @@ abstract interface class SyncMutationKind {
 ///   lands, so it never blinks out of the view.
 ///
 /// Storage stays document-only: the replica is one collection per synced
-/// collection, the outbox and the cursor are documents too, all under
-/// [namespace].
+/// collection, the outbox and the cursor are documents too, each in a
+/// storage collection named under [namespace] ([replicaStoreName],
+/// [outboxStoreName], [metaStoreName]).
 class SyncEngine {
   SyncEngine({
     required StorageAdapter<dynamic> storage,
     required SyncServer server,
     required List<SyncMutationKind> kinds,
     required Set<String> collections,
-    this.namespace = 'sync',
+    this.namespace = 'SYNC',
     this.idField = 'id',
     this.onRefused,
   })  : _storage = storage,
@@ -114,7 +115,8 @@ class SyncEngine {
   final Map<String, SyncMutationKind> _kinds;
   final Set<String> _collections;
 
-  /// Prefix of every storage collection the engine writes.
+  /// Prefix of every storage collection the engine writes (see
+  /// [replicaStoreName], [outboxStoreName] and [metaStoreName]).
   final String namespace;
 
   /// The key each document's id is stored under.
@@ -135,13 +137,23 @@ class SyncEngine {
   final _flushLock = Lock();
   final _changes = StreamController<void>.broadcast();
 
+  /// The id of the mutation [flush] is sending right now, if any: [discard]
+  /// leaves it alone, as the server may already have it.
+  String? _sendingId;
+
   static const _kCursorDocId = 'cursor';
   static const _kCursorValue = 'value';
 
-  String _replicaCollection(String collection) =>
-      '${namespace}__replica__$collection';
-  String get _outboxCollection => '${namespace}__outbox';
-  String get _metaCollection => '${namespace}__meta';
+  /// The storage collection holding the replica of [collection]:
+  /// `<namespace>_REPLICA_<collection>`.
+  String replicaStoreName(String collection) =>
+      '${namespace}_REPLICA_$collection';
+
+  /// The storage collection holding the outbox: `<namespace>_OUTBOX`.
+  String get outboxStoreName => '${namespace}_OUTBOX';
+
+  /// The storage collection holding the cursor: `<namespace>_META`.
+  String get metaStoreName => '${namespace}_META';
 
   /// Fires after every change to the view.
   Stream<void> get changes => _changes.stream;
@@ -170,13 +182,13 @@ class SyncEngine {
   Future<void> open() async {
     for (final collection in _collections) {
       final docs = await _storage.readCollection(
-        collection: _replicaCollection(collection),
+        collection: replicaStoreName(collection),
       );
       _replica[collection] = {
         for (final doc in docs) _idOf(doc, collection): Map.unmodifiable(doc),
       };
     }
-    final stored = await _storage.readCollection(collection: _outboxCollection);
+    final stored = await _storage.readCollection(collection: outboxStoreName);
     for (final raw in stored) {
       try {
         _outbox.add(SyncMutation.fromMap(raw));
@@ -185,13 +197,13 @@ class SyncEngine {
         Log.err('Dropped an unreadable sync mutation: $e');
         final id = raw['id'];
         if (id is String) {
-          await _storage.deleteDocument(collection: _outboxCollection, id: id);
+          await _storage.deleteDocument(collection: outboxStoreName, id: id);
         }
       }
     }
     _outbox.sort((a, b) => a.seq.compareTo(b.seq));
     _nextSeq = _outbox.isEmpty ? 1 : _outbox.last.seq + 1;
-    final meta = await _storage.readCollection(collection: _metaCollection);
+    final meta = await _storage.readCollection(collection: metaStoreName);
     for (final doc in meta) {
       if (doc[idField] == _kCursorDocId) _cursor = doc[_kCursorValue] as String;
     }
@@ -237,6 +249,8 @@ class SyncEngine {
       var accepted = false;
       for (final mutation in List.of(_outbox)) {
         if (mutation.isSent) continue;
+        // Discarded while an earlier one was being sent.
+        if (!_outbox.any((m) => m.id == mutation.id)) continue;
         final kind = _kinds[mutation.kind];
         if (kind == null) {
           // Stored by a build that knew this kind: nothing here can send it.
@@ -244,6 +258,7 @@ class SyncEngine {
           await _dropMutation(mutation);
           continue;
         }
+        _sendingId = mutation.id;
         try {
           await kind.send(mutation);
         } on ReliableNetworkException catch (e) {
@@ -263,6 +278,8 @@ class SyncEngine {
             'Sending sync mutation ${mutation.kind} failed: $e\n$stackTrace',
           );
           return accepted;
+        } finally {
+          _sendingId = null;
         }
         await _replaceMutation(mutation.copyWith(isSent: true));
         accepted = true;
@@ -270,6 +287,24 @@ class SyncEngine {
       return accepted;
     });
     if (anyAccepted) await pull();
+  }
+
+  /// Takes back a change the server has not seen: removes the unsent
+  /// mutation [id] from the outbox and the view, as if it was never made.
+  /// Returns false, changing nothing, when there is no such mutation or it
+  /// was already sent (or is being sent): the server may have it, so only a
+  /// new mutation can undo it.
+  ///
+  /// For an undo made before the change left the device (a tick taken back
+  /// offline), so the server never hears of either.
+  Future<bool> discard(String id) async {
+    _requireOpen();
+    final index = _outbox.indexWhere((m) => m.id == id);
+    if (index < 0) return false;
+    final mutation = _outbox[index];
+    if (mutation.isSent || mutation.id == _sendingId) return false;
+    await _dropMutation(mutation);
+    return true;
   }
 
   /// Pulls every waiting page from the server into the replica.
@@ -291,7 +326,7 @@ class SyncEngine {
       for (final mutation in List.of(_outbox)) {
         if (confirmedByThisPull.contains(mutation.id)) {
           await _storage.deleteDocument(
-            collection: _outboxCollection,
+            collection: outboxStoreName,
             id: mutation.id,
           );
           _outbox.remove(mutation);
@@ -307,12 +342,12 @@ class SyncEngine {
       await _flushLock.synchronized(() async {
         for (final collection in _collections) {
           await _storage.clearCollection(
-            collection: _replicaCollection(collection),
+            collection: replicaStoreName(collection),
           );
           _replica[collection] = {};
         }
-        await _storage.clearCollection(collection: _outboxCollection);
-        await _storage.clearCollection(collection: _metaCollection);
+        await _storage.clearCollection(collection: outboxStoreName);
+        await _storage.clearCollection(collection: metaStoreName);
         _outbox.clear();
         _cursor = null;
         _nextSeq = 1;
@@ -335,12 +370,12 @@ class SyncEngine {
       // The cursor goes first: a snapshot cut short by a crash leaves no
       // cursor, so the next pull is a snapshot again.
       await _storage.deleteDocument(
-        collection: _metaCollection,
+        collection: metaStoreName,
         id: _kCursorDocId,
       );
       for (final collection in _collections) {
         await _storage.clearCollection(
-          collection: _replicaCollection(collection),
+          collection: replicaStoreName(collection),
         );
         _replica[collection] = {};
       }
@@ -350,7 +385,7 @@ class SyncEngine {
       for (final doc in entry.value) {
         final id = _idOf(doc, entry.key);
         await _storage.writeDocument(
-          collection: _replicaCollection(entry.key),
+          collection: replicaStoreName(entry.key),
           id: id,
           data: doc,
         );
@@ -361,14 +396,14 @@ class SyncEngine {
       final docs = _replica[entry.key]!;
       for (final id in entry.value) {
         await _storage.deleteDocument(
-          collection: _replicaCollection(entry.key),
+          collection: replicaStoreName(entry.key),
           id: id,
         );
         docs.remove(id);
       }
     }
     await _storage.writeDocument(
-      collection: _metaCollection,
+      collection: metaStoreName,
       id: _kCursorDocId,
       data: {idField: _kCursorDocId, _kCursorValue: page.cursor},
     );
@@ -397,7 +432,7 @@ class SyncEngine {
   }
 
   Future<void> _storeMutation(SyncMutation mutation) => _storage.writeDocument(
-        collection: _outboxCollection,
+        collection: outboxStoreName,
         id: mutation.id,
         data: mutation.toMap(),
       );
@@ -410,7 +445,7 @@ class SyncEngine {
 
   Future<void> _dropMutation(SyncMutation mutation) async {
     await _storage.deleteDocument(
-      collection: _outboxCollection,
+      collection: outboxStoreName,
       id: mutation.id,
     );
     _outbox.removeWhere((m) => m.id == mutation.id);

@@ -141,6 +141,12 @@ engine.changes.listen((_) => rebuild());
   not yet exposed it to that pull, the view misses it until the next pull.
 - `pull` throws `ReliableNetworkException` when the server gives no answer;
   call it again when the connection or a server nudge says so.
+- `discard(id)` takes back a change that has not been sent (an undo made
+  offline), so the server never hears of either; it returns false once the
+  change was sent.
+- The engine's storage collections are `SYNC_REPLICA_<collection>`,
+  `SYNC_OUTBOX` and `SYNC_META` (`replicaStoreName`, `outboxStoreName`,
+  `metaStoreName`; the `SYNC` prefix is the `namespace` parameter).
 
 ## Signing out while reads are in flight
 

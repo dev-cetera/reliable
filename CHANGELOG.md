@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## [0.6.0]
+
+- feat: `SyncEngine.discard` takes back a change the server has not seen (an undo made before it left the device), so neither reaches the server
+- BREAKING: the engine's storage collections are named `<namespace>_REPLICA_<collection>`, `<namespace>_OUTBOX` and `<namespace>_META` (default namespace `SYNC`), exposed as `replicaStoreName`, `outboxStoreName` and `metaStoreName` so an app can register them with its own store list; stores written by 0.5.0 are not read
+
 ## [0.5.0]
 
 - feat: `SyncEngine`, a local-first sync engine over any `StorageAdapter`: a replica of the server's documents plus an ordered outbox of the device's own changes (`SyncMutation`, applied and sent by an app-defined `SyncMutationKind`), shown together as one view; changes survive restarts, replay under their own idempotency key, refusals are dropped and reported, and pulls page through an app-defined `SyncServer` cursor
