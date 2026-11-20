@@ -31,8 +31,15 @@ class SyncMutation {
   /// When the user made the change (UTC).
   final DateTime createdAt;
 
-  /// Sends that got no answer or a server error so far.
+  /// Sends started so far, one under way included. Counted as each send
+  /// starts, so a send whose answer never came (the connection dropped, the
+  /// app was closed) still counts.
   final int attempts;
+
+  /// True while it is being sent again after an earlier send that got no
+  /// answer or failed: the server may already have this change (its answer
+  /// was lost), so "it already exists" means it got there.
+  bool get isResend => attempts > 1;
 
   /// True once the server accepted it. A sent mutation stays in the view
   /// until a pull that started after the acceptance has landed, so the

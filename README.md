@@ -133,9 +133,18 @@ engine.view('notes'); // what to show
 engine.changes.listen((_) => rebuild());
 ```
 
-- A send that gets no answer (or a 5xx, 408, 429) stays and is retried on the
-  next `flush`, in order; a 4xx refusal drops that change and calls
-  `onRefused`.
+- A send that gets no answer (or a 5xx, 408, 429) stays and is retried on a
+  later `flush`, in order; a 4xx refusal drops that change and calls
+  `onRefused`. The engine never flushes by itself: `retryDelay` says how long
+  to wait before trying again (doubling per failed send, up to
+  `maxRetryDelay`), and a change the server keeps failing is logged as an
+  error after `reportFailuresAfter` sends.
+- Each send is counted (`attempts`) before it goes, so `isResend` tells a
+  kind's `send` that an earlier send may already have reached the server: an
+  "already exists" answer then means it got there.
+- `close()` lets go of the stores at once: a send or pull still under way
+  finishes, but nothing it learns is written, so the stores can be handed to
+  the next user straight away.
 - A sent change stays in the view until a pull that started after the server
   accepted it lands, so it never blinks out. If the server's change log has
   not yet exposed it to that pull, the view misses it until the next pull.

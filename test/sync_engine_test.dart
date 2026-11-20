@@ -3,6 +3,8 @@
 // restart, reach the server in order, replay safely, and the view converges
 // on the server's truth.
 
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reliable/reliable.dart';
 import 'package:sembast/sembast_memory.dart';
@@ -13,6 +15,9 @@ class _FakeServer implements SyncServer {
   final _log = <String>[]; // note ids, in change order
   final appliedMutationIds = <String>{};
 
+  /// [SyncMutation.attempts] of every send, in order.
+  final sentAttempts = <int>[];
+
   /// When true, every request fails as if the device were offline.
   var isOffline = false;
 
@@ -21,6 +26,13 @@ class _FakeServer implements SyncServer {
 
   /// Names (note text) the server refuses with a 422.
   final refusedNames = <String>{};
+
+  /// When set, every send fails with this status before anything is done.
+  int? failsWithStatus;
+
+  /// When set, every send waits for it before answering: a request still
+  /// out while the test does something else.
+  Completer<void>? answerGate;
 
   var pageSize = 100;
 
@@ -36,7 +48,12 @@ class _FakeServer implements SyncServer {
 
   /// What the `PUT_NOTE` / `DELETE_NOTE` kinds call.
   Future<void> receive(SyncMutation mutation) async {
+    sentAttempts.add(mutation.attempts);
     if (isOffline) throw const ReliableNetworkException(message: 'offline');
+    if (failsWithStatus case final status?) {
+      throw ReliableNetworkException(message: 'failed', statusCode: status);
+    }
+    await answerGate?.future;
     // Idempotency: a replay of an applied mutation changes nothing.
     if (appliedMutationIds.add(mutation.id)) {
       final text = mutation.payload['text'] as String?;
@@ -304,6 +321,114 @@ void main() {
     expect(await engine.discard(second.id), isTrue);
     await flushing;
     expect(server.notes.keys, ['a']);
+    expect(engine.pendingCount, 0);
+  });
+
+  test('a send that fails after close leaves the stores as they were',
+      () async {
+    final storage = await _openStorage(dbName);
+    final engine = SyncEngine(
+      storage: storage,
+      server: server,
+      kinds: [_PutNote(server), _DeleteNote(server)],
+      collections: {'notes'},
+    );
+    await engine.open();
+    server.answerGate = Completer<void>();
+    server.losesAnswers = true;
+    await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'Mine'});
+    final flushing = engine.flush();
+    await Future<void>.delayed(Duration.zero);
+    await engine.close();
+    // The next account signs in on this device: the stores are cleared.
+    await storage.clearCollection(collection: engine.outboxStoreName);
+    server.answerGate!.complete();
+    await flushing;
+    await engine.pull();
+    expect(
+      await storage.readCollection(collection: engine.outboxStoreName),
+      isEmpty,
+      reason: 'a late failure must not write the change back',
+    );
+    expect(
+      await storage.readCollection(
+        collection: engine.replicaStoreName('notes'),
+      ),
+      isEmpty,
+      reason: 'a pull after close writes nothing',
+    );
+    expect(() => engine.view('notes'), throwsStateError);
+    expect(
+      () => engine.mutate('PUT_NOTE', {'id': 'b', 'text': 'x'}),
+      throwsStateError,
+    );
+  });
+
+  test('a send that succeeds after close is neither marked nor pulled',
+      () async {
+    final storage = await _openStorage(dbName);
+    final engine = SyncEngine(
+      storage: storage,
+      server: server,
+      kinds: [_PutNote(server), _DeleteNote(server)],
+      collections: {'notes'},
+    );
+    await engine.open();
+    server.answerGate = Completer<void>();
+    await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'Mine'});
+    await engine.mutate('PUT_NOTE', {'id': 'b', 'text': 'Next'});
+    final flushing = engine.flush();
+    await Future<void>.delayed(Duration.zero);
+    await engine.close();
+    server.answerGate!.complete();
+    await flushing;
+    expect(server.notes.keys, ['a'], reason: 'nothing is sent after close');
+    final stored = [
+      for (final raw
+          in await storage.readCollection(collection: engine.outboxStoreName))
+        SyncMutation.fromMap(raw),
+    ]..sort((x, y) => x.seq.compareTo(y.seq));
+    expect(stored.map((m) => (m.payload['id'], m.isSent, m.attempts)), [
+      ('a', false, 1),
+      ('b', false, 0),
+    ]);
+  });
+
+  test('every send is counted before it goes; a resend knows it', () async {
+    final engine = await openEngine();
+    server.losesAnswers = true;
+    final note = await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'x'});
+    expect(note.isResend, isFalse);
+    await engine.flush();
+    server.losesAnswers = false;
+    await engine.flush();
+    expect(server.sentAttempts, [1, 2]);
+  });
+
+  test('retryDelay doubles with each failed send, up to the maximum', () async {
+    final engine = SyncEngine(
+      storage: await _openStorage(dbName),
+      server: server,
+      kinds: [_PutNote(server)],
+      collections: {'notes'},
+      firstRetryDelay: const Duration(seconds: 1),
+      maxRetryDelay: const Duration(seconds: 5),
+    );
+    await engine.open();
+    expect(engine.retryDelay, isNull);
+    server.failsWithStatus = 503;
+    await engine.mutate('PUT_NOTE', {'id': 'a', 'text': 'x'});
+    expect(engine.retryDelay, Duration.zero);
+    final delays = <Duration?>[];
+    for (var i = 0; i < 5; i++) {
+      await engine.flush();
+      delays.add(engine.retryDelay);
+    }
+    expect(delays.map((d) => d!.inSeconds), [1, 2, 4, 5, 5]);
+    expect(engine.pendingCount, 1, reason: 'a 5xx keeps the change');
+    server.failsWithStatus = null;
+    await engine.flush();
+    expect(engine.retryDelay, isNull);
     expect(engine.pendingCount, 0);
   });
 
