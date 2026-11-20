@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [0.7.0]
+
+- feat: SyncEngine closes cleanly, counts sends before they go, and says when to retry
+- close() drops late send and pull results: a closed engine never writes to its stores, so the next user signed in on the device cannot inherit the outbox
+- attempts is counted before each send; SyncMutation.isResend says an earlier send may already have reached the server
+- retryDelay gives a doubling backoff (firstRetryDelay, maxRetryDelay) for the owner to schedule the next flush
+- a change the server keeps failing is logged as an error after reportFailuresAfter sends
+
+
 ## [0.6.0]
 
 - feat: `SyncEngine.discard` takes back a change the server has not seen (an undo made before it left the device), so neither reaches the server
